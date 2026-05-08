@@ -9,6 +9,7 @@ bl_info = {
 }
 
 import os
+import traceback
 
 import bpy
 from bpy.props import EnumProperty
@@ -17,6 +18,30 @@ from bpy_extras.io_utils import ExportHelper
 # =========================================================
 # UTILS
 # =========================================================
+
+
+def log_info(message):
+    print(f"[HP-LP][INFO] {message}")
+
+
+def log_warning(message):
+    print(f"[HP-LP][WARN] {message}")
+
+
+def log_error(message):
+    print(f"[HP-LP][ERROR] {message}")
+
+
+def log_exception(context_message, exc):
+    log_error(f"{context_message}: {exc}")
+    traceback.print_exc()
+
+
+def safe_report(operator, level, message):
+    try:
+        operator.report({level}, message)
+    except Exception as exc:
+        log_exception("Failed to report operator message", exc)
 
 
 def get_active_root_collection(context):
@@ -257,142 +282,137 @@ class EXPORT_OT_export_lp_glb(bpy.types.Operator, ExportHelper):
     )
 
     def invoke(self, context, event):
-        presets = get_glb_presets()
-
-        self.preset = presets[0][0]
-
-        self.filepath = "//"
-
-        context.window_manager.fileselect_add(self)
-
-        return {"RUNNING_MODAL"}
+        try:
+            presets = get_glb_presets()
+            self.preset = presets[0][0]
+            self.filepath = "//"
+            context.window_manager.fileselect_add(self)
+            return {"RUNNING_MODAL"}
+        except Exception as exc:
+            log_exception("Failed to invoke export dialog", exc)
+            safe_report(self, "ERROR", f"Invoke failed: {exc}")
+            return {"CANCELLED"}
 
     def draw(self, context):
-
         layout = self.layout
-
         layout.prop(self, "preset")
 
     def execute(self, context):
+        try:
+            root_collection = get_active_root_collection(context)
+            if not root_collection:
+                safe_report(self, "ERROR", "No active collection")
+                return {"CANCELLED"}
 
-        root_collection = get_active_root_collection(context)
+            export_dir = os.path.dirname(bpy.path.abspath(self.filepath))
+            if not export_dir or not os.path.exists(export_dir):
+                safe_report(self, "ERROR", f"Folder does not exist: {export_dir}")
+                return {"CANCELLED"}
 
-        if not root_collection:
-            self.report({"ERROR"}, "No active collection")
-            return {"CANCELLED"}
+            log_info(f"Active root collection: {root_collection.name}")
+            log_info(f"Export directory: {export_dir}")
+            log_info(f"Selected preset: {self.preset}")
 
-        # Берем только папку
-        export_dir = os.path.dirname(bpy.path.abspath(self.filepath))
-
-        if not os.path.exists(export_dir):
-            self.report({"ERROR"}, f"Folder does not exist: {export_dir}")
-
-            return {"CANCELLED"}
-
-        # ---------------------------------------------
-        # READ PRESET
-        # ---------------------------------------------
-
-        preset_path = ""
-        if self.preset != "__NONE__":
-            preset_path = os.path.join(
-                bpy.utils.user_resource(
-                    "SCRIPTS", path="presets/operator/export_scene.gltf"
-                ),
-                self.preset + ".py",
-            )
-
-        preset_values = {}
-
-        if os.path.exists(preset_path):
-            with open(preset_path, "r", encoding="utf-8") as file:
-                for line in file.readlines():
-                    line = line.strip()
-
-                    if line.startswith("op."):
-                        try:
-                            left, right = line.split("=", 1)
-
-                            prop_name = left.replace("op.", "").strip()
-
-                            value = eval(right.strip())
-
-                            preset_values[prop_name] = value
-
-                        except:
-                            pass
-
-        exported_count = 0
-
-        # ---------------------------------------------
-        # EXPORT
-        # ---------------------------------------------
-
-        lp_objects = [
-            obj
-            for obj in get_all_mesh_objects_recursive(root_collection)
-            if obj.name.lower().endswith("_lp")
-        ]
-
-        for obj in lp_objects:
-
-            export_name = obj.name[:-3]
-
-            export_path = os.path.join(export_dir, export_name + ".glb")
-
-            bpy.ops.object.select_all(action="DESELECT")
-
-            obj.select_set(True)
-
-            context.view_layer.objects.active = obj
-
-            kwargs = {
-                "filepath": export_path,
-                "use_selection": True,
-                "export_format": "GLB",
-            }
-
-            kwargs.update(preset_values)
-
-            print("\n==============================")
-            print("START EXPORT")
-            print("==============================")
-
-            print(f"OBJECT: {obj.name}")
-            print(f"EXPORT PATH: {export_path}")
-
-            print("KWARGS:")
-            for k, v in kwargs.items():
-                print(f"  {k} = {v}")
-
-            try:
-                result = bpy.ops.export_scene.gltf(**kwargs)
-
-                print(f"EXPORT RESULT: {result}")
-
-                # Blender operators return {'FINISHED'} or {'CANCELLED'}
-                if "FINISHED" in result:
-                    # проверяем реально ли файл создался
-                    if os.path.exists(export_path):
-                        print("FILE EXISTS OK")
-
-                        exported_count += 1
-
-                    else:
-                        print("EXPORTER SAID FINISHED BUT FILE MISSING")
-
+            preset_values = {}
+            if self.preset != "__NONE__":
+                preset_path = os.path.join(
+                    bpy.utils.user_resource(
+                        "SCRIPTS", path="presets/operator/export_scene.gltf"
+                    ),
+                    self.preset + ".py",
+                )
+                log_info(f"Preset path: {preset_path}")
+                if os.path.exists(preset_path):
+                    with open(preset_path, "r", encoding="utf-8") as file:
+                        for line in file.readlines():
+                            line = line.strip()
+                            if not line.startswith("op."):
+                                continue
+                            try:
+                                left, right = line.split("=", 1)
+                                prop_name = left.replace("op.", "").strip()
+                                value = eval(right.strip())
+                                preset_values[prop_name] = value
+                            except Exception as exc:
+                                log_exception(f"Preset line parse failed for: {line}", exc)
                 else:
-                    print("EXPORT CANCELLED")
+                    log_warning("Preset file does not exist; using Blender defaults")
 
-            except Exception as e:
-                print("EXCEPTION OCCURRED")
-                print(str(e))
+            lp_objects = []
+            for obj in get_all_mesh_objects_recursive(root_collection):
+                try:
+                    if obj.type == "MESH" and obj.name.lower().endswith("_lp"):
+                        lp_objects.append(obj)
+                except Exception as exc:
+                    log_exception("Failed to inspect object for LP suffix", exc)
 
-            print("==============================\n")
+            log_info(f"Found LP objects: {[obj.name for obj in lp_objects]}")
 
-        self.report({"INFO"}, f"Exported {exported_count} GLB files")
+            if not lp_objects:
+                safe_report(self, "WARNING", "No _lp objects found in active root collection")
+                return {"CANCELLED"}
 
-        return {"FINISHED"}
+            exported_count = 0
+            failed_count = 0
+
+            for obj in lp_objects:
+                export_name = obj.name[:-3]
+                export_path = os.path.join(export_dir, export_name + ".glb")
+                log_info(f"Start export for {obj.name} -> {export_path}")
+
+                prev_hidden = None
+                try:
+                    prev_hidden = obj.hide_get()
+                    if prev_hidden:
+                        obj.hide_set(False)
+
+                    bpy.ops.object.select_all(action="DESELECT")
+                    obj.select_set(True)
+                    context.view_layer.objects.active = obj
+
+                    if not obj.select_get():
+                        raise RuntimeError("Object selection failed (possibly excluded in view layer)")
+                    if context.view_layer.objects.active != obj:
+                        raise RuntimeError("Failed to set object as active")
+
+                    kwargs = {
+                        "filepath": export_path,
+                        "use_selection": True,
+                        "export_format": "GLB",
+                    }
+                    kwargs.update(preset_values)
+
+                    result = bpy.ops.export_scene.gltf(**kwargs)
+                    log_info(f"Exporter result for {obj.name}: {result}")
+
+                    if "FINISHED" in result and os.path.exists(export_path):
+                        exported_count += 1
+                        log_info(f"File exported OK: {export_path}")
+                    else:
+                        failed_count += 1
+                        log_error(
+                            f"Export failed for {obj.name}. Result={result}, file_exists={os.path.exists(export_path)}"
+                        )
+                except Exception as exc:
+                    failed_count += 1
+                    log_exception(f"Exception while exporting object {obj.name}", exc)
+                finally:
+                    try:
+                        if prev_hidden:
+                            obj.hide_set(True)
+                    except Exception as exc:
+                        log_exception(f"Failed to restore hidden state for {obj.name}", exc)
+
+            safe_report(
+                self,
+                "INFO",
+                f"Export finished. Success: {exported_count}, Failed: {failed_count}, Total: {len(lp_objects)}",
+            )
+            return {"FINISHED"}
+        except Exception as exc:
+            log_exception("Critical export failure", exc)
+            safe_report(self, "ERROR", f"Export failed: {exc}")
+            return {"CANCELLED"}
 
 
 # =========================================================
