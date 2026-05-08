@@ -10,6 +10,7 @@ bl_info = {
 
 import os
 import traceback
+import re
 
 import bpy
 from bpy.props import EnumProperty
@@ -417,6 +418,118 @@ class EXPORT_OT_export_lp_glb(bpy.types.Operator, ExportHelper):
 
 
 # =========================================================
+# EXPORT SELECTED GLB
+# =========================================================
+
+
+class EXPORT_OT_export_selected_glb(bpy.types.Operator, ExportHelper):
+    bl_idname = "export_scene.export_selected_glb"
+    bl_label = "Export Selected GLB"
+
+    filename_ext = ".glb"
+    filter_glob: bpy.props.StringProperty(default="*.glb", options={"HIDDEN"})
+    preset: EnumProperty(
+        name="GLTF Preset", items=lambda self, context: get_glb_presets()
+    )
+
+    def invoke(self, context, event):
+        try:
+            presets = get_glb_presets()
+            self.preset = presets[0][0]
+            self.filepath = "//"
+            context.window_manager.fileselect_add(self)
+            return {"RUNNING_MODAL"}
+        except Exception as exc:
+            log_exception("Failed to invoke selected export dialog", exc)
+            safe_report(self, "ERROR", f"Invoke failed: {exc}")
+            return {"CANCELLED"}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "preset")
+
+    def execute(self, context):
+        try:
+            export_dir = os.path.dirname(bpy.path.abspath(self.filepath))
+            if not export_dir or not os.path.exists(export_dir):
+                safe_report(self, "ERROR", f"Folder does not exist: {export_dir}")
+                return {"CANCELLED"}
+
+            preset_values = {}
+            if self.preset != "__NONE__":
+                preset_path = os.path.join(
+                    bpy.utils.user_resource(
+                        "SCRIPTS", path="presets/operator/export_scene.gltf"
+                    ),
+                    self.preset + ".py",
+                )
+                if os.path.exists(preset_path):
+                    with open(preset_path, "r", encoding="utf-8") as file:
+                        for line in file.readlines():
+                            line = line.strip()
+                            if not line.startswith("op."):
+                                continue
+                            try:
+                                left, right = line.split("=", 1)
+                                prop_name = left.replace("op.", "").strip()
+                                value = eval(right.strip())
+                                preset_values[prop_name] = value
+                            except Exception as exc:
+                                log_exception(f"Preset line parse failed for: {line}", exc)
+
+            selected_meshes = [obj for obj in context.selected_objects if obj.type == "MESH"]
+            if not selected_meshes:
+                safe_report(self, "WARNING", "No selected mesh objects")
+                return {"CANCELLED"}
+
+            exported_count = 0
+            failed_count = 0
+
+            for obj in selected_meshes:
+                try:
+                    clean_name = re.sub(r"_lp.*$", "", obj.name, flags=re.IGNORECASE)
+                    if not clean_name:
+                        clean_name = obj.name
+                    export_path = os.path.join(export_dir, clean_name + ".glb")
+
+                    bpy.ops.object.select_all(action="DESELECT")
+                    obj.select_set(True)
+                    context.view_layer.objects.active = obj
+
+                    kwargs = {}
+                    kwargs.update(preset_values)
+                    kwargs["filepath"] = export_path
+                    kwargs["use_selection"] = True
+                    kwargs["export_format"] = "GLB"
+
+                    result = bpy.ops.export_scene.gltf(**kwargs)
+                    resolved_export_path = bpy.path.abspath(kwargs["filepath"])
+
+                    if "FINISHED" in result and os.path.exists(resolved_export_path):
+                        exported_count += 1
+                        log_info(f"Selected export OK: {obj.name} -> {resolved_export_path}")
+                    else:
+                        failed_count += 1
+                        log_error(
+                            f"Selected export failed for {obj.name}. Result={result}, expected_path={resolved_export_path}, file_exists={os.path.exists(resolved_export_path)}"
+                        )
+                except Exception as exc:
+                    failed_count += 1
+                    log_exception(f"Exception while exporting selected object {obj.name}", exc)
+
+            safe_report(
+                self,
+                "INFO",
+                f"Selected export finished. Success: {exported_count}, Failed: {failed_count}, Total: {len(selected_meshes)}",
+            )
+            return {"FINISHED"}
+        except Exception as exc:
+            log_exception("Critical selected export failure", exc)
+            safe_report(self, "ERROR", f"Export failed: {exc}")
+            return {"CANCELLED"}
+
+
+# =========================================================
 # SELECT HP
 # =========================================================
 
@@ -563,6 +676,7 @@ class VIEW3D_PT_hp_lp_tools(bpy.types.Panel):
         layout.operator("object.auto_hp_lp_rename", icon="OUTLINER_COLLECTION")
 
         layout.operator("export_scene.export_lp_glb", icon="EXPORT")
+        layout.operator("export_scene.export_selected_glb", icon="EXPORT")
 
         layout.separator()
 
@@ -600,6 +714,7 @@ class VIEW3D_PT_hp_lp_tools(bpy.types.Panel):
 classes = (
     OBJECT_OT_auto_hp_lp_rename,
     EXPORT_OT_export_lp_glb,
+    EXPORT_OT_export_selected_glb,
     OBJECT_OT_select_hp,
     OBJECT_OT_select_lp,
     OBJECT_OT_hide_hp,
