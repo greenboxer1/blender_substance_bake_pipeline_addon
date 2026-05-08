@@ -69,12 +69,12 @@ def get_glb_presets():
         "SCRIPTS", path="presets/operator/export_scene.gltf"
     )
 
-    items = []
+    items = [("__NONE__", "No Preset", "Use Blender defaults", 0)]
 
     if os.path.exists(preset_dir):
         preset_files = [f for f in os.listdir(preset_dir) if f.endswith(".py")]
 
-        for i, file in enumerate(preset_files):
+        for i, file in enumerate(preset_files, start=1):
             name = os.path.splitext(file)[0]
 
             items.append((name, name, "", i))
@@ -257,13 +257,7 @@ class EXPORT_OT_export_lp_glb(bpy.types.Operator, ExportHelper):
     )
 
     def invoke(self, context, event):
-
         presets = get_glb_presets()
-
-        if not presets:
-            self.report({"ERROR"}, "No GLTF presets found")
-
-            return {"CANCELLED"}
 
         self.preset = presets[0][0]
 
@@ -299,12 +293,14 @@ class EXPORT_OT_export_lp_glb(bpy.types.Operator, ExportHelper):
         # READ PRESET
         # ---------------------------------------------
 
-        preset_path = os.path.join(
-            bpy.utils.user_resource(
-                "SCRIPTS", path="presets/operator/export_scene.gltf"
-            ),
-            self.preset + ".py",
-        )
+        preset_path = ""
+        if self.preset != "__NONE__":
+            preset_path = os.path.join(
+                bpy.utils.user_resource(
+                    "SCRIPTS", path="presets/operator/export_scene.gltf"
+                ),
+                self.preset + ".py",
+            )
 
         preset_values = {}
 
@@ -332,17 +328,13 @@ class EXPORT_OT_export_lp_glb(bpy.types.Operator, ExportHelper):
         # EXPORT
         # ---------------------------------------------
 
-        for child_collection in root_collection.children:
-            lp_objects = [
-                obj
-                for obj in child_collection.objects
-                if obj.type == "MESH" and obj.name.lower().endswith("_lp")
-            ]
+        lp_objects = [
+            obj
+            for obj in get_all_mesh_objects_recursive(root_collection)
+            if obj.name.lower().endswith("_lp")
+        ]
 
-            if not lp_objects:
-                continue
-
-            obj = lp_objects[0]
+        for obj in lp_objects:
 
             export_name = obj.name[:-3]
 
