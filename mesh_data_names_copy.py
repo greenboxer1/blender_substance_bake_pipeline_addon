@@ -375,23 +375,24 @@ class EXPORT_OT_export_lp_glb(bpy.types.Operator, ExportHelper):
                     if context.view_layer.objects.active != obj:
                         raise RuntimeError("Failed to set object as active")
 
-                    kwargs = {
-                        "filepath": export_path,
-                        "use_selection": True,
-                        "export_format": "GLB",
-                    }
+                    kwargs = {}
                     kwargs.update(preset_values)
+                    # Preset must not override target object export contract.
+                    kwargs["filepath"] = export_path
+                    kwargs["use_selection"] = True
+                    kwargs["export_format"] = "GLB"
 
                     result = bpy.ops.export_scene.gltf(**kwargs)
                     log_info(f"Exporter result for {obj.name}: {result}")
 
-                    if "FINISHED" in result and os.path.exists(export_path):
+                    resolved_export_path = bpy.path.abspath(kwargs["filepath"])
+                    if "FINISHED" in result and os.path.exists(resolved_export_path):
                         exported_count += 1
-                        log_info(f"File exported OK: {export_path}")
+                        log_info(f"File exported OK: {resolved_export_path}")
                     else:
                         failed_count += 1
                         log_error(
-                            f"Export failed for {obj.name}. Result={result}, file_exists={os.path.exists(export_path)}"
+                            f"Export failed for {obj.name}. Result={result}, expected_path={resolved_export_path}, file_exists={os.path.exists(resolved_export_path)}"
                         )
                 except Exception as exc:
                     failed_count += 1
