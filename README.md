@@ -1,0 +1,1 @@
+# blender_substance_bake_pipeline_addon
